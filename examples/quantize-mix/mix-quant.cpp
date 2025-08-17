@@ -5,15 +5,7 @@
 #include <string>
 #include <regex>
 
-
-bool ggml_common_quantize_0(
-        std::ifstream & finp,
-        std::ofstream & fout,
-        const ggml_ftype ftype,
-        const std::vector<std::string> & to_quant,
-        const std::vector<std::string> & to_skip) {
-
-    ggml_type qtype = GGML_TYPE_F32;
+bool quant_from_ftype(ggml_ftype ftype, ggml_type & qtype) {
 
     switch (ftype) {
         case GGML_FTYPE_MOSTLY_Q4_0: qtype = GGML_TYPE_Q4_0; break;
@@ -48,6 +40,31 @@ bool ggml_common_quantize_0(
 
     if (!ggml_is_quantized(qtype)) {
         fprintf(stderr, "%s: invalid quantization type %d (%s)\n", __func__, qtype, ggml_type_name(qtype));
+        return false;
+    }
+
+    return true;
+}
+
+/** Quantizes the model with different quantization levels for encoder and decoder
+ * 
+ */
+bool quantize_mix(
+        std::ifstream & finp,
+        std::ofstream & fout,
+        const ggml_ftype encoder_ftype,
+        const ggml_ftype decoder_ftype,
+        const std::vector<std::string> & to_quant,
+        const std::vector<std::string> & to_skip) {
+
+    // Define quant types
+    ggml_type encoder_qtype = GGML_TYPE_F32;
+    ggml_type decoder_qtype = GGML_TYPE_F32;
+
+    if (!quant_from_ftype(encoder_ftype, encoder_qtype)) {
+        return false;
+    }
+    if (!quant_from_ftype(decoder_ftype, decoder_qtype)) {
         return false;
     }
 
@@ -95,6 +112,16 @@ bool ggml_common_quantize_0(
             }
         }
 
+        ggml_type target_qtype = encoder_qtype; // default to F32
+
+        // Determine quantization type based on layer type (encoder vs decoder)
+        if (quantize) {
+            if (name.find("encoder") != std::string::npos) {
+                target_qtype = encoder_qtype;
+            } else if (name.find("decoder") != std::string::npos) {
+                target_qtype = decoder_qtype;
+            }         }
+
         // check if we should skip this tensor
         for (const auto & s : to_skip) {
             if (std::regex_match(name, std::regex(s))) {
@@ -124,7 +151,7 @@ bool ggml_common_quantize_0(
                 finp.read(reinterpret_cast<char *>(data_f32.data()), nelements * sizeof(float));
             }
 
-            ttype = qtype;
+            ttype = target_qtype;
         } else {
             const int bpe = (ttype == 0) ? sizeof(float) : sizeof(uint16_t);
 
@@ -200,7 +227,11 @@ bool ggml_common_quantize_0(
     }
 
     printf("%s: model size  = %8.2f MB\n", __func__, total_size_org/1024.0/1024.0);
-    printf("%s: quant size  = %8.2f MB | ftype = %d (%s)\n", __func__, total_size_new/1024.0/1024.0, ftype, ggml_type_name(qtype));
+    printf("%s: quant size  = %8.2f MB | encoder_ftype = %d (%s) | decoder_ftype = %d (%s)\n", 
+           __func__, total_size_new/1024.0/1024.0, 
+           encoder_ftype, ggml_type_name(encoder_qtype),
+           decoder_ftype, ggml_type_name(decoder_qtype));
 
     return true;
 }
+ 

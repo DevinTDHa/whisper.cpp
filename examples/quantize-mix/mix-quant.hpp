@@ -6,10 +6,10 @@
 #include <vector>
 #include <string>
 
-
-bool ggml_common_quantize_0(
+bool quantize_mix(
         std::ifstream & finp,
         std::ofstream & fout,
-        const ggml_ftype ftype,
+        const ggml_ftype encoder_ftype,
+        const ggml_ftype decoder_ftype,
         const std::vector<std::string> & to_quant,
         const std::vector<std::string> & to_skip);

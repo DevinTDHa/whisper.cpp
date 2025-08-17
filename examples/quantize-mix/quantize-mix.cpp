@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "common-ggml.h"
+#include "mix-quant.hpp"
 
 #include <cassert>
 #include <cmath>
@@ -36,8 +37,11 @@ struct whisper_filters {
     std::vector<float> data;
 };
 
-// quantize a model
-static bool whisper_model_quantize(const std::string & fname_inp, const std::string & fname_out, ggml_ftype ftype) {
+/**
+ * quantize a model with mixed quantization for encoder and decoder 
+ */
+static bool whisper_model_quantize(const std::string & fname_inp, const std::string & fname_out, 
+                                  ggml_ftype encoder_ftype, ggml_ftype decoder_ftype) {
     gpt_vocab vocab;
 
     printf("%s: loading model from '%s'\n", __func__, fname_inp.c_str());
@@ -83,7 +87,8 @@ static bool whisper_model_quantize(const std::string & fname_inp, const std::str
         finp.read((char *) &hparams.ftype,         sizeof(hparams.ftype));
 
         const int32_t qntvr_src =    hparams.ftype / GGML_QNT_VERSION_FACTOR;
-        const int32_t ftype_dst = GGML_QNT_VERSION * GGML_QNT_VERSION_FACTOR + ftype;
+        // only list encoder for now
+        const int32_t ftype_dst = GGML_QNT_VERSION * GGML_QNT_VERSION_FACTOR + encoder_ftype;
 
         fprintf(stderr, "%s: n_vocab       = %d\n", __func__, hparams.n_vocab);
         fprintf(stderr, "%s: n_audio_ctx   = %d\n", __func__, hparams.n_audio_ctx);
@@ -97,7 +102,8 @@ static bool whisper_model_quantize(const std::string & fname_inp, const std::str
         fprintf(stderr, "%s: n_mels        = %d\n", __func__, hparams.n_mels);
         fprintf(stderr, "%s: ftype (src)   = %d\n", __func__, hparams.ftype);
         fprintf(stderr, "%s: qntvr (src)   = %d\n", __func__, qntvr_src);
-        fprintf(stderr, "%s: ftype (dst)   = %d\n", __func__, ftype_dst);
+        fprintf(stderr, "%s: encoder_ftype = %d\n", __func__, encoder_ftype);
+        fprintf(stderr, "%s: decoder_ftype = %d\n", __func__, decoder_ftype);
         fprintf(stderr, "%s: qntvr (dst)   = %d\n", __func__, GGML_QNT_VERSION);
 
         fout.write((const char *) &hparams.n_vocab,       sizeof(hparams.n_vocab));
@@ -165,7 +171,7 @@ static bool whisper_model_quantize(const std::string & fname_inp, const std::str
         "decoder.positional_embedding",
     };
 
-    if (!ggml_common_quantize_0(finp, fout, ftype, { ".*" }, to_skip)) {
+    if (!quantize_mix(finp, fout, encoder_ftype, decoder_ftype, { ".*" }, to_skip)) {
         fprintf(stderr, "%s: failed to quantize model '%s'\n", __func__, fname_inp.c_str());
         return false;
     }
@@ -179,8 +185,9 @@ static bool whisper_model_quantize(const std::string & fname_inp, const std::str
 int main(int argc, char ** argv) {
     ggml_backend_load_all();
 
-    if (argc != 4) {
-        fprintf(stderr, "usage: %s model-f32.bin model-quant.bin type\n", argv[0]);
+    if (argc != 5) {
+        fprintf(stderr, "usage: %s model-f32.bin model-quant.bin encoder_type decoder_type\n", argv[0]);
+        fprintf(stderr, "\nAvailable quantization types:\n");
         ggml_print_ftypes(stderr);
         return 1;
     }
@@ -195,7 +202,8 @@ int main(int argc, char ** argv) {
     const std::string fname_inp = argv[1];
     const std::string fname_out = argv[2];
 
-    const ggml_ftype ftype = ggml_parse_ftype(argv[3]);
+    const ggml_ftype encoder_ftype = ggml_parse_ftype(argv[3]);
+    const ggml_ftype decoder_ftype = ggml_parse_ftype(argv[4]);
 
     const int64_t t_main_start_us = ggml_time_us();
 
@@ -205,7 +213,7 @@ int main(int argc, char ** argv) {
     {
         const int64_t t_start_us = ggml_time_us();
 
-        if (!whisper_model_quantize(fname_inp, fname_out, ggml_ftype(ftype))) {
+        if (!whisper_model_quantize(fname_inp, fname_out, encoder_ftype, decoder_ftype)) {
             fprintf(stderr, "%s: failed to quantize model from '%s'\n", __func__, fname_inp.c_str());
             return 1;
         }
