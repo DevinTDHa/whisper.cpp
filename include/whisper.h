@@ -403,7 +403,8 @@ extern "C" {
     WHISPER_API int whisper_model_n_text_head  (struct whisper_context * ctx);
     WHISPER_API int whisper_model_n_text_layer (struct whisper_context * ctx);
     WHISPER_API int whisper_model_n_mels       (struct whisper_context * ctx);
-    WHISPER_API int whisper_model_ftype        (struct whisper_context * ctx);
+    WHISPER_API int whisper_model_encoder_ftype        (struct whisper_context * ctx);
+    WHISPER_API int whisper_model_decoder_ftype        (struct whisper_context * ctx);
     WHISPER_API int whisper_model_type         (struct whisper_context * ctx);
 
     // Token logits obtained from the last call to whisper_decode()

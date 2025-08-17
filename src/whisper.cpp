@@ -619,7 +619,7 @@ static bool whisper_sched_graph_init(struct whisper_sched & allocr, std::vector<
 // 'n_text_layer': 24
 // }
 //
-// default hparams (Whisper tiny)
+// default hparams with separate encoder decoder ftype (Whisper tiny)
 struct whisper_hparams {
     int32_t n_vocab       = 51864;
     int32_t n_audio_ctx   = 1500;
@@ -631,7 +631,8 @@ struct whisper_hparams {
     int32_t n_text_head   = 6;
     int32_t n_text_layer  = 4;
     int32_t n_mels        = 80;
-    int32_t ftype         = 1;
+    int32_t encoder_ftype = 1;
+    int32_t decoder_ftype = 1;
     float   eps           = 1e-5f;
 };
 
@@ -968,7 +969,8 @@ struct whisper_context {
     int64_t t_load_us  = 0;
     int64_t t_start_us = 0;
 
-    ggml_type wtype = ggml_type::GGML_TYPE_F16; // weight type (FP32 / FP16 / QX)
+    ggml_type encoder_wtype = ggml_type::GGML_TYPE_F16; // weight type (FP32 / FP16 / QX)
+    ggml_type decoder_wtype = ggml_type::GGML_TYPE_F16; // weight type (FP32 / FP16 / QX)
     ggml_type itype = ggml_type::GGML_TYPE_F16; // intermediate type (FP32 or FP16)
 
     whisper_context_params params;
@@ -1534,7 +1536,8 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
         read_safe(loader, hparams.n_text_head);
         read_safe(loader, hparams.n_text_layer);
         read_safe(loader, hparams.n_mels);
-        read_safe(loader, hparams.ftype);
+        read_safe(loader, hparams.encoder_ftype);
+        read_safe(loader, hparams.decoder_ftype);
 
         assert(hparams.n_text_state == hparams.n_audio_state);
 
@@ -1564,17 +1567,26 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
             }
         }
 
-        const int32_t qntvr = hparams.ftype / GGML_QNT_VERSION_FACTOR;
+        const int32_t encoder_qntvr = hparams.encoder_ftype / GGML_QNT_VERSION_FACTOR;
+        const int32_t decoder_qntvr = hparams.decoder_ftype / GGML_QNT_VERSION_FACTOR;
 
-        hparams.ftype %= GGML_QNT_VERSION_FACTOR;
+        hparams.encoder_ftype %= GGML_QNT_VERSION_FACTOR;
+        hparams.decoder_ftype %= GGML_QNT_VERSION_FACTOR;
 
         // for the big tensors, we have the option to store the data in 16-bit floats or quantized
         // in order to save memory and also to speed up the computation
-        wctx.wtype = ggml_ftype_to_ggml_type((ggml_ftype) (model.hparams.ftype));
-        if (wctx.wtype == GGML_TYPE_COUNT) {
-            WHISPER_LOG_ERROR("%s: invalid model (bad ftype value %d)\n", __func__, model.hparams.ftype);
+        wctx.encoder_wtype = ggml_ftype_to_ggml_type((ggml_ftype) (model.hparams.encoder_ftype));
+        if (wctx.encoder_wtype == GGML_TYPE_COUNT) {
+            WHISPER_LOG_ERROR("%s: invalid model (bad ftype value %d)\n", __func__, model.hparams.encoder_ftype);
             return false;
         }
+        
+        wctx.decoder_wtype = ggml_ftype_to_ggml_type((ggml_ftype) (model.hparams.decoder_ftype));
+        if (wctx.decoder_wtype == GGML_TYPE_COUNT) {
+            WHISPER_LOG_ERROR("%s: invalid model (bad ftype value %d)\n", __func__, model.hparams.decoder_ftype);
+            return false;
+        }
+        
 
         WHISPER_LOG_INFO("%s: n_vocab       = %d\n", __func__, hparams.n_vocab);
         WHISPER_LOG_INFO("%s: n_audio_ctx   = %d\n", __func__, hparams.n_audio_ctx);
@@ -1586,8 +1598,10 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
         WHISPER_LOG_INFO("%s: n_text_head   = %d\n", __func__, hparams.n_text_head);
         WHISPER_LOG_INFO("%s: n_text_layer  = %d\n", __func__, hparams.n_text_layer);
         WHISPER_LOG_INFO("%s: n_mels        = %d\n", __func__, hparams.n_mels);
-        WHISPER_LOG_INFO("%s: ftype         = %d\n", __func__, model.hparams.ftype);
-        WHISPER_LOG_INFO("%s: qntvr         = %d\n", __func__, qntvr);
+        WHISPER_LOG_INFO("%s: encoder_ftype = %d\n", __func__, model.hparams.encoder_ftype);
+        WHISPER_LOG_INFO("%s: decoder_ftype = %d\n", __func__, model.hparams.decoder_ftype);
+        WHISPER_LOG_INFO("%s: encoder_qntvr         = %d\n", __func__, encoder_qntvr);
+        WHISPER_LOG_INFO("%s: decoder_qntvr         = %d\n", __func__, decoder_qntvr);
         WHISPER_LOG_INFO("%s: type          = %d (%s%s)\n", __func__, model.type, g_model_name.at(model.type).c_str(), mver.c_str());
     }
 
@@ -1692,8 +1706,10 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
         WHISPER_LOG_INFO("%s: n_langs       = %d\n", __func__, vocab.num_languages());
     }
 
-    const ggml_type wtype = wctx.wtype;
-    const ggml_type vtype = wctx.wtype == GGML_TYPE_F32 ? GGML_TYPE_F32 : GGML_TYPE_F16; // conv type
+    const ggml_type encoder_wtype = wctx.encoder_wtype;
+    const ggml_type decoder_wtype = wctx.decoder_wtype;
+    // TODO: Encoder here ok?
+    const ggml_type vtype = wctx.encoder_wtype == GGML_TYPE_F32 ? GGML_TYPE_F32 : GGML_TYPE_F16; // conv type
 
     const auto & hparams = model.hparams;
 
@@ -1790,31 +1806,31 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
             layer.mlp_ln_w = create_tensor(ASR_TENSOR_MLP_LN_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_audio_state), i);
             layer.mlp_ln_b = create_tensor(ASR_TENSOR_MLP_LN_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32,   n_audio_state), i);
 
-            layer.mlp_0_w = create_tensor(ASR_TENSOR_MLP_0_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, wtype, n_audio_state, 4*n_audio_state), i);
+            layer.mlp_0_w = create_tensor(ASR_TENSOR_MLP_0_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, encoder_wtype, n_audio_state, 4*n_audio_state), i);
             layer.mlp_0_b = create_tensor(ASR_TENSOR_MLP_0_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 4*n_audio_state), i);
 
-            layer.mlp_1_w = create_tensor(ASR_TENSOR_MLP_2_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, wtype, 4*n_audio_state, n_audio_state), i);
+            layer.mlp_1_w = create_tensor(ASR_TENSOR_MLP_2_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, encoder_wtype, 4*n_audio_state, n_audio_state), i);
             layer.mlp_1_b = create_tensor(ASR_TENSOR_MLP_2_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32,   n_audio_state), i);
 
             layer.attn_ln_0_w = create_tensor(ASR_TENSOR_ATTN_LN_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_audio_state), i);
             layer.attn_ln_0_b = create_tensor(ASR_TENSOR_ATTN_LN_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_audio_state), i);
 
-            layer.attn_q_w = create_tensor(ASR_TENSOR_ATTN_QUERY_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, wtype, n_audio_state, n_audio_state), i);
+            layer.attn_q_w = create_tensor(ASR_TENSOR_ATTN_QUERY_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, encoder_wtype, n_audio_state, n_audio_state), i);
             layer.attn_q_b = create_tensor(ASR_TENSOR_ATTN_QUERY_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_audio_state), i);
 
-            layer.attn_k_w = create_tensor(ASR_TENSOR_ATTN_KEY_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, wtype, n_audio_state, n_audio_state), i);
+            layer.attn_k_w = create_tensor(ASR_TENSOR_ATTN_KEY_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, encoder_wtype, n_audio_state, n_audio_state), i);
 
-            layer.attn_v_w = create_tensor(ASR_TENSOR_ATTN_VALUE_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, wtype, n_audio_state, n_audio_state), i);
+            layer.attn_v_w = create_tensor(ASR_TENSOR_ATTN_VALUE_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, encoder_wtype, n_audio_state, n_audio_state), i);
             layer.attn_v_b = create_tensor(ASR_TENSOR_ATTN_VALUE_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_audio_state), i);
 
-            layer.attn_ln_1_w = create_tensor(ASR_TENSOR_ATTN_OUT_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, wtype, n_audio_state, n_audio_state), i);
+            layer.attn_ln_1_w = create_tensor(ASR_TENSOR_ATTN_OUT_WEIGHT, ASR_SYSTEM_ENCODER, ggml_new_tensor_2d(ctx, encoder_wtype, n_audio_state, n_audio_state), i);
             layer.attn_ln_1_b = create_tensor(ASR_TENSOR_ATTN_OUT_BIAS, ASR_SYSTEM_ENCODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_audio_state), i);
         }
 
         // decoder
         model.d_pe = create_tensor(ASR_TENSOR_DEC_POS_EMBD, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_text_state, n_text_ctx));
 
-        model.d_te = create_tensor(ASR_TENSOR_DEC_TOKEN_EMBD_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_vocab));
+        model.d_te = create_tensor(ASR_TENSOR_DEC_TOKEN_EMBD_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_vocab));
 
         model.d_ln_w = create_tensor(ASR_TENSOR_LN_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state));
         model.d_ln_b = create_tensor(ASR_TENSOR_LN_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state));
@@ -1825,38 +1841,38 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
             layer.mlp_ln_w = create_tensor(ASR_TENSOR_MLP_LN_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
             layer.mlp_ln_b = create_tensor(ASR_TENSOR_MLP_LN_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.mlp_0_w = create_tensor(ASR_TENSOR_MLP_0_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, n_text_state, 4*n_text_state), i);
+            layer.mlp_0_w = create_tensor(ASR_TENSOR_MLP_0_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, 4*n_text_state), i);
             layer.mlp_0_b = create_tensor(ASR_TENSOR_MLP_0_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 4*n_text_state), i);
 
-            layer.mlp_1_w = create_tensor(ASR_TENSOR_MLP_2_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, 4*n_text_state, n_text_state), i);
+            layer.mlp_1_w = create_tensor(ASR_TENSOR_MLP_2_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, 4*n_text_state, n_text_state), i);
             layer.mlp_1_b = create_tensor(ASR_TENSOR_MLP_2_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
             layer.attn_ln_0_w = create_tensor(ASR_TENSOR_ATTN_LN_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
             layer.attn_ln_0_b = create_tensor(ASR_TENSOR_ATTN_LN_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.attn_q_w = create_tensor(ASR_TENSOR_ATTN_QUERY_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.attn_q_w = create_tensor(ASR_TENSOR_ATTN_QUERY_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
             layer.attn_q_b = create_tensor(ASR_TENSOR_ATTN_QUERY_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.attn_k_w = create_tensor(ASR_TENSOR_ATTN_KEY_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.attn_k_w = create_tensor(ASR_TENSOR_ATTN_KEY_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
 
-            layer.attn_v_w = create_tensor(ASR_TENSOR_ATTN_VALUE_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.attn_v_w = create_tensor(ASR_TENSOR_ATTN_VALUE_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
             layer.attn_v_b = create_tensor(ASR_TENSOR_ATTN_VALUE_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.attn_ln_1_w = create_tensor(ASR_TENSOR_ATTN_OUT_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.attn_ln_1_w = create_tensor(ASR_TENSOR_ATTN_OUT_WEIGHT, ASR_SYSTEM_DECODER, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
             layer.attn_ln_1_b = create_tensor(ASR_TENSOR_ATTN_OUT_BIAS, ASR_SYSTEM_DECODER, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
             layer.cross_attn_ln_0_w = create_tensor(ASR_TENSOR_ATTN_LN_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
             layer.cross_attn_ln_0_b = create_tensor(ASR_TENSOR_ATTN_LN_BIAS, ASR_SYSTEM_CROSS, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.cross_attn_q_w = create_tensor(ASR_TENSOR_ATTN_QUERY_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.cross_attn_q_w = create_tensor(ASR_TENSOR_ATTN_QUERY_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
             layer.cross_attn_q_b = create_tensor(ASR_TENSOR_ATTN_QUERY_BIAS, ASR_SYSTEM_CROSS, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.cross_attn_k_w = create_tensor(ASR_TENSOR_ATTN_KEY_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.cross_attn_k_w = create_tensor(ASR_TENSOR_ATTN_KEY_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
 
-            layer.cross_attn_v_w = create_tensor(ASR_TENSOR_ATTN_VALUE_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.cross_attn_v_w = create_tensor(ASR_TENSOR_ATTN_VALUE_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
             layer.cross_attn_v_b = create_tensor(ASR_TENSOR_ATTN_VALUE_BIAS, ASR_SYSTEM_CROSS, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
 
-            layer.cross_attn_ln_1_w = create_tensor(ASR_TENSOR_ATTN_OUT_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, wtype, n_text_state, n_text_state), i);
+            layer.cross_attn_ln_1_w = create_tensor(ASR_TENSOR_ATTN_OUT_WEIGHT, ASR_SYSTEM_CROSS, ggml_new_tensor_2d(ctx, decoder_wtype, n_text_state, n_text_state), i);
             layer.cross_attn_ln_1_b = create_tensor(ASR_TENSOR_ATTN_OUT_BIAS, ASR_SYSTEM_CROSS, ggml_new_tensor_1d(ctx, GGML_TYPE_F32, n_text_state), i);
         }
 
@@ -4157,8 +4173,12 @@ int whisper_model_n_mels(struct whisper_context * ctx) {
     return ctx->model.hparams.n_mels;
 }
 
-int whisper_model_ftype(struct whisper_context * ctx) {
-    return ctx->model.hparams.ftype;
+int whisper_model_encoder_ftype(struct whisper_context * ctx) {
+    return ctx->model.hparams.encoder_ftype;
+}
+
+int whisper_model_decoder_ftype(struct whisper_context * ctx) {
+    return ctx->model.hparams.decoder_ftype;
 }
 
 int whisper_model_type(struct whisper_context * ctx) {

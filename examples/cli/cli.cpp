@@ -695,7 +695,8 @@ static void output_json(
                 value_i("layer", whisper_model_n_text_layer(ctx), true);
             end_obj(false);
             value_i("mels", whisper_model_n_mels(ctx), false);
-            value_i("ftype", whisper_model_ftype(ctx), true);
+            value_i("encoder_ftype", whisper_model_encoder_ftype(ctx), true);
+            value_i("decoder_ftype", whisper_model_decoder_ftype(ctx), true);
         end_obj(false);
         start_obj("params");
             value_s("model", params.model.c_str(), false);
