@@ -1580,13 +1580,13 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
             WHISPER_LOG_ERROR("%s: invalid model (bad ftype value %d)\n", __func__, model.hparams.encoder_ftype);
             return false;
         }
-        
+
         wctx.decoder_wtype = ggml_ftype_to_ggml_type((ggml_ftype) (model.hparams.decoder_ftype));
         if (wctx.decoder_wtype == GGML_TYPE_COUNT) {
             WHISPER_LOG_ERROR("%s: invalid model (bad ftype value %d)\n", __func__, model.hparams.decoder_ftype);
             return false;
         }
-        
+
 
         WHISPER_LOG_INFO("%s: n_vocab       = %d\n", __func__, hparams.n_vocab);
         WHISPER_LOG_INFO("%s: n_audio_ctx   = %d\n", __func__, hparams.n_audio_ctx);
