@@ -87,8 +87,8 @@ static bool whisper_model_quantize(const std::string & fname_inp, const std::str
         finp.read((char *) &hparams.ftype,         sizeof(hparams.ftype));
 
         const int32_t qntvr_src =    hparams.ftype / GGML_QNT_VERSION_FACTOR;
-        // only list encoder for now
-        const int32_t ftype_dst = GGML_QNT_VERSION * GGML_QNT_VERSION_FACTOR + encoder_ftype;
+        const int32_t encoder_ftype_dst = GGML_QNT_VERSION * GGML_QNT_VERSION_FACTOR + encoder_ftype;
+        const int32_t decoder_ftype_dst = GGML_QNT_VERSION * GGML_QNT_VERSION_FACTOR + decoder_ftype;
 
         fprintf(stderr, "%s: n_vocab       = %d\n", __func__, hparams.n_vocab);
         fprintf(stderr, "%s: n_audio_ctx   = %d\n", __func__, hparams.n_audio_ctx);
@@ -116,7 +116,8 @@ static bool whisper_model_quantize(const std::string & fname_inp, const std::str
         fout.write((const char *) &hparams.n_text_head,   sizeof(hparams.n_text_head));
         fout.write((const char *) &hparams.n_text_layer,  sizeof(hparams.n_text_layer));
         fout.write((const char *) &hparams.n_mels,        sizeof(hparams.n_mels));
-        fout.write((const char *) &ftype_dst,             sizeof(hparams.ftype));
+        fout.write((const char *) &encoder_ftype_dst,     sizeof(encoder_ftype_dst));
+        fout.write((const char *) &decoder_ftype_dst,     sizeof(decoder_ftype_dst));
     }
 
     // load mel filters
