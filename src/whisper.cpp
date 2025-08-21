@@ -1708,7 +1708,7 @@ static bool whisper_model_load(struct whisper_model_loader * loader, whisper_con
 
     const ggml_type encoder_wtype = wctx.encoder_wtype;
     const ggml_type decoder_wtype = wctx.decoder_wtype;
-    // TODO: Encoder here ok?
+
     const ggml_type vtype = wctx.encoder_wtype == GGML_TYPE_F32 ? GGML_TYPE_F32 : GGML_TYPE_F16; // conv type
 
     const auto & hparams = model.hparams;
